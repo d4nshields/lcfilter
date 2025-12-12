@@ -1,0 +1,40 @@
+# .logcatscope - Define what is "in scope" for puzzlenook
+#
+# Tags listed here will ALWAYS be shown, even if they match
+# LEVEL/TAG/TAGLEVEL ignore rules (only PATTERN rules can hide them).
+
+[app]
+package = "com.tinkerplexlabs.puzzlenook"
+processes = [
+    "com.tinkerplexlabs.puzzlenook",
+]
+
+[expected_tags]
+# Your app's tags - these are protected from LEVEL/TAG/TAGLEVEL filters
+tags = [
+    # Flutter framework (your app's output goes through this)
+    "flutter",
+
+    # Your app's process name (truncated by logcat)
+    "labs.puzzlenook",
+
+    # Useful Android lifecycle tags for debugging app behavior
+    "ActivityTaskManager",
+    "ActivityManager",
+]
+
+[expected_libs]
+libs = [
+    "flutter",
+    "androidx.",
+    "kotlin.",
+]
+
+[stacktrace_roots]
+roots = [
+    "com.tinkerplexlabs.puzzlenook.",
+    "io.flutter.",
+    "androidx.",
+    "java.",
+    "kotlin.",
+]
