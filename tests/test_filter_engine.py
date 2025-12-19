@@ -20,7 +20,8 @@ from lcfilter.models import (
     IgnoreRuleLinePattern,
     FilterResult,
     ScopeConfig,
-    ExpectedTags,
+    RouteCategory,
+    RouteResult,
 )
 
 
@@ -389,26 +390,26 @@ class TestIsEventInScope:
         assert is_event_in_scope(entry, scope) is False
 
     def test_tag_in_expected_tags_returns_true(self):
-        """Events with tags in expected_tags are in scope."""
-        scope = ScopeConfig(expected_tags=ExpectedTags(tags=["MyApp", "MyAppNetwork"]))
+        """Events with tags in scope are in scope."""
+        scope = ScopeConfig(tags={"MyApp", "MyAppNetwork"})
         entry = make_entry(tag="MyApp")
         assert is_event_in_scope(entry, scope) is True
 
     def test_tag_not_in_expected_tags_returns_false(self):
-        """Events with tags not in expected_tags are not in scope."""
-        scope = ScopeConfig(expected_tags=ExpectedTags(tags=["MyApp", "MyAppNetwork"]))
+        """Events with tags not in scope are not in scope."""
+        scope = ScopeConfig(tags={"MyApp", "MyAppNetwork"})
         entry = make_entry(tag="SystemServer")
         assert is_event_in_scope(entry, scope) is False
 
     def test_none_tag_returns_false(self):
         """Events with None tag are not in scope."""
-        scope = ScopeConfig(expected_tags=ExpectedTags(tags=["MyApp"]))
+        scope = ScopeConfig(tags={"MyApp"})
         entry = LogEntry(raw_line="some line", tag=None)
         assert is_event_in_scope(entry, scope) is False
 
     def test_empty_tag_returns_false(self):
         """Events with empty tag are not in scope."""
-        scope = ScopeConfig(expected_tags=ExpectedTags(tags=["MyApp"]))
+        scope = ScopeConfig(tags={"MyApp"})
         entry = LogEntry(raw_line="some line", tag="")
         assert is_event_in_scope(entry, scope) is False
 
@@ -447,7 +448,7 @@ class TestScopeAwareFiltering:
 
     def make_scope_with_tags(self, tags: list[str]) -> ScopeConfig:
         """Helper to create a ScopeConfig with expected tags."""
-        return ScopeConfig(expected_tags=ExpectedTags(tags=tags))
+        return ScopeConfig(tags=set(tags))
 
     def test_in_scope_event_not_hidden_by_level_rule(self):
         """In-scope events should NOT be hidden by LEVEL rules."""
@@ -622,3 +623,94 @@ class TestScopeAwareFiltering:
         # Info log from system - should be shown (no rule for INFO)
         entry4 = make_entry(tag="ActivityManager", level=LogLevel.INFO)
         assert engine.filter_entry(entry4).should_display is True
+
+
+class TestRouteEntry:
+    """Tests for FilterEngine.route_entry() method."""
+
+    def test_in_scope_tag_routes_to_in_scope(self):
+        """Tag in scope config should route to IN_SCOPE."""
+        scope_config = ScopeConfig(tags={"MyApp"})
+        engine = FilterEngine(scope_config=scope_config)
+
+        entry = make_entry(tag="MyApp")
+        result = engine.route_entry(entry)
+
+        assert result.category == RouteCategory.IN_SCOPE
+        assert result.matched_rule is None
+
+    def test_ignored_entry_routes_to_ignored(self):
+        """Entry matching ignore rule should route to IGNORED."""
+        ignore_config = IgnoreConfig()
+        ignore_config.add_rule(IgnoreRuleTag(tag="chatty"))
+
+        engine = FilterEngine(ignore_config=ignore_config)
+        entry = make_entry(tag="chatty")
+        result = engine.route_entry(entry)
+
+        assert result.category == RouteCategory.IGNORED
+        assert isinstance(result.matched_rule, IgnoreRuleTag)
+
+    def test_unmatched_entry_routes_to_noise(self):
+        """Entry not matching anything should route to NOISE."""
+        scope_config = ScopeConfig(tags={"MyApp"})
+        ignore_config = IgnoreConfig()
+        ignore_config.add_rule(IgnoreRuleTag(tag="chatty"))
+
+        engine = FilterEngine(ignore_config=ignore_config, scope_config=scope_config)
+        entry = make_entry(tag="SystemServer")  # Not in scope, not ignored
+        result = engine.route_entry(entry)
+
+        assert result.category == RouteCategory.NOISE
+        assert result.matched_rule is None
+
+    def test_in_scope_takes_priority_over_ignored(self):
+        """In-scope should take priority even if entry would match ignore rule."""
+        scope_config = ScopeConfig(tags={"MyApp"})
+        ignore_config = IgnoreConfig()
+        ignore_config.add_rule(IgnoreRuleTag(tag="MyApp"))  # Same tag
+
+        engine = FilterEngine(ignore_config=ignore_config, scope_config=scope_config)
+        entry = make_entry(tag="MyApp")
+        result = engine.route_entry(entry)
+
+        # Should be IN_SCOPE, not IGNORED
+        assert result.category == RouteCategory.IN_SCOPE
+
+    def test_level_ignore_rule_routes_correctly(self):
+        """LEVEL ignore rule should route out-of-scope entries to IGNORED."""
+        scope_config = ScopeConfig(tags={"MyApp"})
+        ignore_config = IgnoreConfig()
+        ignore_config.add_rule(IgnoreRuleLevel(level=LogLevel.DEBUG))
+
+        engine = FilterEngine(ignore_config=ignore_config, scope_config=scope_config)
+
+        # Out-of-scope DEBUG -> IGNORED
+        entry1 = make_entry(tag="SystemServer", level=LogLevel.DEBUG)
+        assert engine.route_entry(entry1).category == RouteCategory.IGNORED
+
+        # In-scope DEBUG -> IN_SCOPE (level rule doesn't apply)
+        entry2 = make_entry(tag="MyApp", level=LogLevel.DEBUG)
+        assert engine.route_entry(entry2).category == RouteCategory.IN_SCOPE
+
+        # Out-of-scope INFO -> NOISE (no rule for INFO)
+        entry3 = make_entry(tag="SystemServer", level=LogLevel.INFO)
+        assert engine.route_entry(entry3).category == RouteCategory.NOISE
+
+    def test_empty_configs_routes_all_to_noise(self):
+        """With empty configs, all entries should route to NOISE."""
+        engine = FilterEngine()
+        entry = make_entry()
+        result = engine.route_entry(entry)
+
+        assert result.category == RouteCategory.NOISE
+
+    def test_route_result_contains_entry(self):
+        """RouteResult should contain the original entry."""
+        engine = FilterEngine()
+        entry = make_entry(tag="TestTag", message="Test message")
+        result = engine.route_entry(entry)
+
+        assert result.entry is entry
+        assert result.entry.tag == "TestTag"
+        assert result.entry.message == "Test message"

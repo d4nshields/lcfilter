@@ -22,7 +22,8 @@ from .config_scope import (
 )
 from .filter_engine import FilterEngine, FilterStats
 from .parser_logcat import parse_logcat_line, LogcatStreamParser
-from .models import IgnoreConfig, ScopeConfig, LogLevel
+from .models import IgnoreConfig, ScopeConfig, LogLevel, RouteCategory
+from .stream_router import StreamRouter, RoutingConfig
 
 app = typer.Typer(
     name="lcfilter",
@@ -217,7 +218,7 @@ def monitor(
         bool,
         typer.Option(
             "--raw",
-            help="Print unfiltered logcat output (bypass ignore rules).",
+            help="Print unfiltered logcat output (bypass routing).",
         ),
     ] = False,
     color: Annotated[
@@ -235,6 +236,27 @@ def monitor(
             help="Clear the logcat buffer before starting.",
         ),
     ] = False,
+    in_scope_output: Annotated[
+        Optional[str],
+        typer.Option(
+            "--in-scope",
+            help="Route in-scope logs to file (default: stdout).",
+        ),
+    ] = None,
+    ignored_output: Annotated[
+        Optional[str],
+        typer.Option(
+            "--ignored",
+            help="Route ignored logs to file (default: /dev/null).",
+        ),
+    ] = None,
+    noise_output: Annotated[
+        Optional[str],
+        typer.Option(
+            "--noise",
+            help="Route noise logs to file (default: stdout).",
+        ),
+    ] = None,
     adb_args: Annotated[
         Optional[list[str]],
         typer.Argument(
@@ -242,13 +264,20 @@ def monitor(
         ),
     ] = None,
 ) -> None:
-    """Run adb logcat with real-time filtering.
+    """Run adb logcat with three-stream routing.
+
+    Logs are routed to three streams based on hierarchical tests:
+    1. In-scope (tag in .logcatscope) -> --in-scope stream
+    2. Ignored (matches .logcatignore) -> --ignored stream
+    3. Noise (everything else) -> --noise stream
 
     Any additional arguments after -- are passed directly to adb logcat.
 
     Examples:
         lcfilter monitor
         lcfilter mon --raw
+        lcfilter monitor --ignored=ignored.log
+        lcfilter monitor --in-scope=app.log --noise=/dev/null
         lcfilter monitor -- -s MyTag:*
     """
     # Load config files (unless raw mode)
@@ -291,25 +320,59 @@ def monitor(
         err_console.print("[red]Error:[/red] adb not found. Is it installed and in PATH?")
         raise typer.Exit(1)
 
-    parser = LogcatStreamParser()
+    # Set up routing
+    routing_config = RoutingConfig.from_options(
+        in_scope=in_scope_output,
+        ignored=ignored_output,
+        noise=noise_output,
+    )
 
     try:
         assert process.stdout is not None
-        for line in process.stdout:
-            entry = parse_logcat_line(line)
 
-            if raw:
+        if raw:
+            # Raw mode: bypass routing, print everything to stdout
+            for line in process.stdout:
+                entry = parse_logcat_line(line)
                 _print_entry(entry, color=color)
-            else:
-                result = engine.filter_entry(entry)
-                if result.should_display:
-                    _print_entry(entry, color=color)
+        else:
+            # Normal mode: route to three streams
+            with StreamRouter(routing_config) as router:
+                for line in process.stdout:
+                    entry = parse_logcat_line(line)
+                    result = engine.route_entry(entry)
+
+                    # Write to appropriate stream
+                    if color and _is_stdout_stream(result.category, routing_config):
+                        # Use colored output for stdout streams
+                        _print_entry_to_category(entry, result.category, routing_config, color=True)
+                    else:
+                        # Plain output for file streams
+                        router.write(result.category, entry.raw_line)
 
     except KeyboardInterrupt:
-        console.print("\n[dim]Interrupted.[/dim]")
+        err_console.print("\n[dim]Interrupted.[/dim]")
     finally:
         process.terminate()
         process.wait()
+
+
+def _is_stdout_stream(category: RouteCategory, config: RoutingConfig) -> bool:
+    """Check if a category routes to stdout."""
+    if category == RouteCategory.IN_SCOPE:
+        return config.in_scope.is_stdout()
+    elif category == RouteCategory.IGNORED:
+        return config.ignored.is_stdout()
+    else:  # NOISE
+        return config.noise.is_stdout()
+
+
+def _print_entry_to_category(
+    entry, category: RouteCategory, config: RoutingConfig, color: bool = True
+) -> None:
+    """Print entry to stdout if that category goes to stdout."""
+    if _is_stdout_stream(category, config):
+        _print_entry(entry, color=color)
 
 
 # Register 'mon' as an alias for 'monitor'

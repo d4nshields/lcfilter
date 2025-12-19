@@ -1,8 +1,8 @@
 # lcfilter
 
-> **Filtered Android logcat viewing with scope-aware protection.**
+> **Three-stream log routing for Android development.**
 
-Cut through the noise of Android logcat output. **lcfilter** lets you define what to hide and what to protect, so you only see the logs that matter.
+Cut through the noise of Android logcat output. **lcfilter** routes your logs to three streams: your app's logs, known noise to ignore, and everything else you're still evaluating.
 
 ## The Problem
 
@@ -12,7 +12,7 @@ You need a way to focus on **signal over noise**.
 
 ## The Solution
 
-**lcfilter** brings `.gitignore`-style filtering to Android logs:
+**lcfilter** brings three-stream routing to Android logs:
 
 ```bash
 # In your Android project directory
@@ -20,26 +20,43 @@ lcfilter init      # Creates .logcatignore and .logcatscope
 lcfilter monitor   # See only what matters
 ```
 
-### Scope-Aware Filtering
+### Three-Stream Routing
 
-The key insight: **your app's logs should never be hidden by broad rules**.
+Logs are routed to three streams based on simple rules:
 
-Configure what's "in scope" for your project, and those tags are *protected*—even when you filter out all verbose/debug noise from the system:
+1. **In-Scope** — Tags listed in `.logcatscope` (your app's logs)
+2. **Ignored** — Matches rules in `.logcatignore` (known noise)
+3. **Noise** — Everything else (monitor this to refine your filters)
 
-```toml
-# .logcatscope - Your app's identity
-[expected_tags]
-tags = ["MyApp", "flutter", "MyNetwork"]
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     logcat output                           │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+              ┌────────────────────────┐
+              │   Tag in .logcatscope? │
+              └───────────┬────────────┘
+                    yes   │   no
+                ┌─────────┴─────────┐
+                ▼                   ▼
+         ┌──────────┐    ┌────────────────────┐
+         │ In-Scope │    │ Matches .logcatignore? │
+         │ (stdout) │    └──────────┬─────────┘
+         └──────────┘         yes   │   no
+                          ┌─────────┴─────────┐
+                          ▼                   ▼
+                   ┌──────────┐        ┌──────────┐
+                   │ Ignored  │        │  Noise   │
+                   │(/dev/null)│        │ (stdout) │
+                   └──────────┘        └──────────┘
 ```
 
-```gitignore
-# .logcatignore - What to hide
-LEVEL:V    # Hides verbose... except from MyApp, flutter, MyNetwork
-LEVEL:D    # Hides debug... except from your app
-TAG:chatty # System noise, gone
-```
-
-**Result:** Clean output. Your logs. Your app's story.
+**The workflow:**
+1. Set your app's debug tags in `.logcatscope`
+2. Monitor the noise stream over time
+3. Add high-volume/low-relevance patterns to `.logcatignore`
+4. Keep noise manageable for automated monitoring and alerts
 
 ## Quick Start
 
@@ -70,6 +87,10 @@ lcfilter monitor
 lcfilter mon --clear          # Clear buffer first
 lcfilter mon -- -s MyTag:*    # Pass args to adb logcat
 
+# Route streams to files
+lcfilter mon --ignored=ignored.log    # Save ignored to file
+lcfilter mon --in-scope=app.log --noise=/dev/null  # Only app logs
+
 # Test filters against saved logs
 lcfilter dry-run -i captured.txt --stats
 ```
@@ -83,9 +104,49 @@ lcfilter dry-run -i captured.txt --stats
 | `dry-run` | Test filters against a log file |
 | `clear` | Clear the device's logcat buffer |
 
+### Monitor Options
+
+```bash
+lcfilter monitor [OPTIONS] [-- ADB_ARGS...]
+
+Options:
+  --ignore-file PATH    Path to .logcatignore file (default: .logcatignore)
+  --scope-file PATH     Path to .logcatscope file (default: .logcatscope)
+  --raw                 Bypass filtering, print everything
+  --color/--no-color    Enable/disable colored output
+  -c, --clear           Clear logcat buffer before starting
+
+Stream Routing:
+  --in-scope FILE       Route in-scope logs to file (default: stdout)
+  --ignored FILE        Route ignored logs to file (default: /dev/null)
+  --noise FILE          Route noise logs to file (default: stdout)
+```
+
 ## Configuration
 
-### `.logcatignore` — What to Hide
+### `.logcatscope` — Your App's Tags
+
+A simple list of tags that belong to your app. One tag per line.
+
+```
+# .logcatscope - Tags that belong to my app
+# Comments start with #
+
+# Main app tags
+MyApp
+MyAppNetwork
+MyAppDb
+
+# Flutter tags
+flutter
+
+# Third-party libraries you care about
+OkHttp
+```
+
+Tags in this file are **always** routed to the in-scope stream, regardless of ignore rules.
+
+### `.logcatignore` — Known Noise to Hide
 
 ```gitignore
 # Hide by log level
@@ -106,27 +167,13 @@ PATTERN:^GC.*freed
 LINEPATTERN:.*\bART\b.*\bGC\b.*
 ```
 
-### `.logcatscope` — What to Protect
-
-```toml
-[app]
-package = "com.example.myapp"
-
-[expected_tags]
-# These tags are PROTECTED from TAG/LEVEL/TAGLEVEL rules
-tags = ["MyApp", "flutter", "MyNetworkLayer"]
-
-[expected_libs]
-libs = ["okhttp", "retrofit2"]
-
-[stacktrace_roots]
-roots = ["com.example.myapp.", "kotlin."]
-```
+**Note:** These rules only apply to logs that are NOT in scope. Your app's logs (tags in `.logcatscope`) are never hidden by `.logcatignore` rules.
 
 ## Features
 
-- **Real-time filtering** — Stream logcat with instant filtering
+- **Three-stream routing** — Separate your app, known noise, and unknown noise
 - **Scope-aware protection** — Your app's logs are never hidden by broad rules
+- **Flexible routing** — Route any stream to stdout, file, or /dev/null
 - **Multiple formats** — Supports threadtime, brief, tag, time, process formats
 - **Color-coded output** — Log levels are color-coded for quick scanning
 - **Dry-run mode** — Test your filters against saved log files

@@ -1,7 +1,7 @@
-"""Data models for logcatignore."""
+"""Data models for lcfilter."""
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, auto
 from typing import Pattern
 import re
 
@@ -138,60 +138,45 @@ class IgnoreConfig:
         self.rules.append(rule)
 
 
-# --- Scope Configuration ---
-
-@dataclass
-class AppScope:
-    """Application scope information."""
-    package: str = ""
-    processes: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ExpectedTags:
-    """Tags expected from the app or its dependencies."""
-    tags: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ExpectedLibs:
-    """Library prefixes expected in stack traces."""
-    libs: list[str] = field(default_factory=list)
-
-
-@dataclass
-class StacktraceRoots:
-    """Root packages for stack trace filtering."""
-    roots: list[str] = field(default_factory=list)
-
+# --- Scope Configuration (simplified) ---
 
 @dataclass
 class ScopeConfig:
     """Parsed .logcatscope configuration.
 
-    This defines what is "in scope" for the current project.
-    Useful for filtering, anomaly detection, and identifying
-    relevant log entries.
+    Contains a set of tags that are considered "in scope" for your app.
+    In-scope logs are routed to the InScope output stream.
     """
-    app: AppScope = field(default_factory=AppScope)
-    expected_tags: ExpectedTags = field(default_factory=ExpectedTags)
-    expected_libs: ExpectedLibs = field(default_factory=ExpectedLibs)
-    stacktrace_roots: StacktraceRoots = field(default_factory=StacktraceRoots)
+    tags: set[str] = field(default_factory=set)
 
     def is_tag_in_scope(self, tag: str) -> bool:
-        """Check if a tag is in the expected tags list."""
-        return tag in self.expected_tags.tags
-
-    def is_process_in_scope(self, process: str) -> bool:
-        """Check if a process name matches the app's processes."""
-        return process in self.app.processes or process == self.app.package
-
-    def is_stacktrace_in_scope(self, class_name: str) -> bool:
-        """Check if a class name matches any stacktrace root."""
-        return any(class_name.startswith(root) for root in self.stacktrace_roots.roots)
+        """Check if a tag is in scope."""
+        return tag in self.tags
 
 
-# --- Filter Result (for extensibility) ---
+# --- Routing ---
+
+class RouteCategory(Enum):
+    """Categories for three-stream output routing.
+
+    IN_SCOPE: Tag is in .logcatscope (your app's logs)
+    IGNORED: Matches a rule in .logcatignore (known noise)
+    NOISE: Everything else (unknown - refine over time)
+    """
+    IN_SCOPE = auto()
+    IGNORED = auto()
+    NOISE = auto()
+
+
+@dataclass
+class RouteResult:
+    """Result of routing a log entry to an output stream."""
+    entry: LogEntry
+    category: RouteCategory
+    matched_rule: IgnoreRule | None = None
+
+
+# --- Filter Result (for backward compatibility) ---
 
 @dataclass
 class FilterResult:
@@ -203,7 +188,3 @@ class FilterResult:
     entry: LogEntry
     should_display: bool
     matched_rule: IgnoreRule | None = None
-    # Future fields for extensibility:
-    # anomaly_score: float = 0.0
-    # category: str | None = None
-    # severity_override: LogLevel | None = None

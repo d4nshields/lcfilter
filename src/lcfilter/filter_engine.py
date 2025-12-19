@@ -10,6 +10,8 @@ from .models import (
     IgnoreRuleLinePattern,
     ScopeConfig,
     FilterResult,
+    RouteCategory,
+    RouteResult,
 )
 
 
@@ -17,9 +19,7 @@ def is_event_in_scope(entry: LogEntry, scope: ScopeConfig | None) -> bool:
     """Check if a log entry is considered "in scope" for the current project.
 
     An event is considered in-scope if its tag appears in the scope's
-    expected_tags list. In-scope events receive special treatment during
-    filtering: they are not suppressed by TAG, LEVEL, or TAGLEVEL rules,
-    only by pattern-based rules (PATTERN, LINEPATTERN).
+    tags set. In-scope events are routed to the InScope output stream.
 
     Args:
         entry: The log entry to check.
@@ -35,7 +35,7 @@ def is_event_in_scope(entry: LogEntry, scope: ScopeConfig | None) -> bool:
     if not tag:
         return False
 
-    return tag in scope.expected_tags.tags
+    return tag in scope.tags
 
 
 def is_pattern_based_rule(rule: IgnoreRule) -> bool:
@@ -140,10 +140,44 @@ class FilterEngine:
 
         return self._apply_post_filters(result)
 
+    def route_entry(self, entry: LogEntry) -> RouteResult:
+        """Route a log entry to one of three categories.
+
+        Routing logic (hierarchical):
+        1. Is tag in scope? -> IN_SCOPE
+        2. Does it match any ignore rule? -> IGNORED
+        3. Otherwise -> NOISE
+
+        This is simpler than filter_entry() because in-scope logs
+        always go to IN_SCOPE regardless of ignore rules.
+
+        Args:
+            entry: The log entry to route.
+
+        Returns:
+            RouteResult with category and optional matched rule.
+        """
+        # First check: Is this in-scope?
+        if is_event_in_scope(entry, self.scope_config):
+            return RouteResult(entry=entry, category=RouteCategory.IN_SCOPE)
+
+        # Second check: Does it match any ignore rule?
+        # For out-of-scope, check ALL rules (not just pattern-based)
+        for rule in self.ignore_config.rules:
+            if rule.matches(entry):
+                return RouteResult(
+                    entry=entry,
+                    category=RouteCategory.IGNORED,
+                    matched_rule=rule,
+                )
+
+        # Default: noise
+        return RouteResult(entry=entry, category=RouteCategory.NOISE)
+
     def _check_ignore_rules(self, entry: LogEntry) -> IgnoreRule | None:
         """Check if any ignore rule matches the entry.
 
-        For in-scope events (tag in scope.expected_tags), only pattern-based
+        For in-scope events (tag in scope.tags), only pattern-based
         rules (PATTERN, LINEPATTERN) are applied. TAG, LEVEL, and TAGLEVEL
         rules are skipped for in-scope events.
 

@@ -1,25 +1,17 @@
-"""Parser for .logcatscope configuration files (TOML format)."""
+"""Parser for .logcatscope configuration files (simple line-based format)."""
 
 from pathlib import Path
-import tomllib
-from typing import Any
 
-from .models import (
-    ScopeConfig,
-    AppScope,
-    ExpectedTags,
-    ExpectedLibs,
-    StacktraceRoots,
-)
+from .models import ScopeConfig
 
 
 class ScopeParseError(Exception):
     """Error parsing .logcatscope file."""
 
-    def __init__(self, message: str, key: str | None = None):
-        self.key = key
-        if key:
-            super().__init__(f"Error at '{key}': {message}")
+    def __init__(self, message: str, line_number: int | None = None):
+        self.line_number = line_number
+        if line_number:
+            super().__init__(f"Line {line_number}: {message}")
         else:
             super().__init__(message)
 
@@ -44,8 +36,14 @@ def parse_scope_file(path: Path) -> ScopeConfig:
 def parse_scope_content(content: str) -> ScopeConfig:
     """Parse .logcatscope content from a string.
 
+    Format:
+        - One tag per line
+        - Lines starting with # are comments
+        - Empty lines and whitespace-only lines are ignored
+        - Leading/trailing whitespace on tags is trimmed
+
     Args:
-        content: The raw TOML content of a .logcatscope file.
+        content: The raw content of a .logcatscope file.
 
     Returns:
         Parsed ScopeConfig.
@@ -53,163 +51,52 @@ def parse_scope_content(content: str) -> ScopeConfig:
     Raises:
         ScopeParseError: If the content is invalid.
     """
-    try:
-        data = tomllib.loads(content)
-    except tomllib.TOMLDecodeError as e:
-        raise ScopeParseError(f"Invalid TOML: {e}") from e
+    tags: set[str] = set()
 
-    return _build_scope_config(data)
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        # Strip whitespace
+        line = line.strip()
 
+        # Skip empty lines
+        if not line:
+            continue
 
-def _build_scope_config(data: dict[str, Any]) -> ScopeConfig:
-    """Build a ScopeConfig from parsed TOML data."""
-    config = ScopeConfig()
+        # Skip comments
+        if line.startswith("#"):
+            continue
 
-    # Parse [app] section
-    if "app" in data:
-        config.app = _parse_app_section(data["app"])
+        # Validate tag (no spaces allowed in tag names)
+        if " " in line or "\t" in line:
+            raise ScopeParseError(
+                f"Invalid tag '{line}' - tags cannot contain whitespace",
+                line_number=line_number,
+            )
 
-    # Parse [expected_tags] section
-    if "expected_tags" in data:
-        config.expected_tags = _parse_expected_tags_section(data["expected_tags"])
+        # Add the tag
+        tags.add(line)
 
-    # Parse [expected_libs] section
-    if "expected_libs" in data:
-        config.expected_libs = _parse_expected_libs_section(data["expected_libs"])
-
-    # Parse [stacktrace_roots] section
-    if "stacktrace_roots" in data:
-        config.stacktrace_roots = _parse_stacktrace_roots_section(data["stacktrace_roots"])
-
-    return config
-
-
-def _parse_app_section(data: Any) -> AppScope:
-    """Parse the [app] section."""
-    if not isinstance(data, dict):
-        raise ScopeParseError("Expected a table/dict", key="app")
-
-    app = AppScope()
-
-    if "package" in data:
-        if not isinstance(data["package"], str):
-            raise ScopeParseError("Expected a string", key="app.package")
-        app.package = data["package"]
-
-    if "processes" in data:
-        if not isinstance(data["processes"], list):
-            raise ScopeParseError("Expected a list", key="app.processes")
-        for i, item in enumerate(data["processes"]):
-            if not isinstance(item, str):
-                raise ScopeParseError(f"Expected string at index {i}", key="app.processes")
-        app.processes = data["processes"]
-
-    return app
-
-
-def _parse_expected_tags_section(data: Any) -> ExpectedTags:
-    """Parse the [expected_tags] section."""
-    if not isinstance(data, dict):
-        raise ScopeParseError("Expected a table/dict", key="expected_tags")
-
-    tags = ExpectedTags()
-
-    if "tags" in data:
-        if not isinstance(data["tags"], list):
-            raise ScopeParseError("Expected a list", key="expected_tags.tags")
-        for i, item in enumerate(data["tags"]):
-            if not isinstance(item, str):
-                raise ScopeParseError(f"Expected string at index {i}", key="expected_tags.tags")
-        tags.tags = data["tags"]
-
-    return tags
-
-
-def _parse_expected_libs_section(data: Any) -> ExpectedLibs:
-    """Parse the [expected_libs] section."""
-    if not isinstance(data, dict):
-        raise ScopeParseError("Expected a table/dict", key="expected_libs")
-
-    libs = ExpectedLibs()
-
-    if "libs" in data:
-        if not isinstance(data["libs"], list):
-            raise ScopeParseError("Expected a list", key="expected_libs.libs")
-        for i, item in enumerate(data["libs"]):
-            if not isinstance(item, str):
-                raise ScopeParseError(f"Expected string at index {i}", key="expected_libs.libs")
-        libs.libs = data["libs"]
-
-    return libs
-
-
-def _parse_stacktrace_roots_section(data: Any) -> StacktraceRoots:
-    """Parse the [stacktrace_roots] section."""
-    if not isinstance(data, dict):
-        raise ScopeParseError("Expected a table/dict", key="stacktrace_roots")
-
-    roots = StacktraceRoots()
-
-    if "roots" in data:
-        if not isinstance(data["roots"], list):
-            raise ScopeParseError("Expected a list", key="stacktrace_roots.roots")
-        for i, item in enumerate(data["roots"]):
-            if not isinstance(item, str):
-                raise ScopeParseError(f"Expected string at index {i}", key="stacktrace_roots.roots")
-        roots.roots = data["roots"]
-
-    return roots
+    return ScopeConfig(tags=tags)
 
 
 # --- Sample file generation ---
 
 SAMPLE_LOGCATSCOPE = """\
-# .logcatscope - Define what is "in scope" for your Android app
+# .logcatscope - Tags that belong to your app
 #
-# This file uses TOML format. It defines context about your app
-# that can be used for smart filtering, anomaly detection, and
-# focusing on relevant log entries.
+# List one tag per line. Logs from these tags are considered "in scope"
+# and will be routed to the in-scope output stream.
+#
+# Lines starting with # are comments.
+# Empty lines are ignored.
 
-[app]
-# Your app's package name
-package = "com.example.myapp"
+# Your app's log tags
+MyApp
+MyAppNetwork
+MyAppDb
 
-# Process names to watch (main process + any background services)
-processes = [
-    "com.example.myapp",
-    "com.example.myapp:worker",
-]
-
-[expected_tags]
-# Log tags you expect from your app and key dependencies
-# Logs from these tags are considered "in scope"
-tags = [
-    "MyApp",
-    "MyAppNetwork",
-    "MyAppDb",
-    "ActivityManager",
-    "WindowManager",
-]
-
-[expected_libs]
-# Library package prefixes commonly seen in stack traces
-# Used to identify relevant vs third-party code
-libs = [
-    "okhttp",
-    "retrofit2",
-    "androidx.",
-    "kotlin.",
-]
-
-[stacktrace_roots]
-# Package roots to consider "relevant" in stack traces
-# Helps highlight your code vs framework code
-roots = [
-    "com.example.myapp.",
-    "androidx.",
-    "java.",
-    "kotlin.",
-]
+# Framework tags you want to see
+flutter
+ActivityManager
 """
 
 
